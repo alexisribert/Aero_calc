@@ -1,449 +1,307 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from scipy.optimize import root_scalar
+from scipy.optimize import fsolve
 
-# Configuration de la page
-st.set_page_config(page_title="AER Turbo-Boosté", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Appli Aéro Turbo-Boostée", layout="wide")
 
-# ==========================================
-# GESTION DES UNITÉS (Dictionnaires de conversion vers le SI)
-# ==========================================
-UNITS = {
-    "Vitesse": {"m/s": 1.0, "km/h": 1/3.6, "kts": 0.51444},
-    "Pression": {"Pa": 1.0, "hPa": 100.0, "bar": 1e5, "psi": 6894.76},
-    "Température": {"K": "K", "°C": "C"},
-    "Longueur": {"m": 1.0, "cm": 0.01, "ft": 0.3048},
-    "Densité": {"kg/m³": 1.0, "g/cm³": 1000.0},
-    "Force": {"N": 1.0, "kN": 1000.0}
+st.title("🚀 Appli Aéro Turbo-Boostée")
+st.markdown("Cette application reproduit et améliore les calculs de l'onglet **Expérimental**.")
+
+# --- Dictionnaires de conversion ---
+unit_factors = {
+    "Pression": {"Pa": 1.0, "bar": 1e5, "atm": 101325.0},
+    "Vitesse": {"m/s": 1.0, "km/h": 1/3.6, "kt": 1/1.94384},
+    "Distance": {"m": 1.0, "ft": 0.3048, "km": 1000.0},
+    "Temperature": {"K": (1.0, 0.0), "°C": (1.0, 273.15)} # (multiplier, offset)
 }
 
-def convert_temp_to_si(val, unit):
-    if pd.isna(val): return np.nan
-    return val + 273.15 if unit == "°C" else val
+def convert_to_SI(val, unit, category):
+    if pd.isna(val): return val
+    if category == "Temperature":
+        return val * unit_factors[category][unit][0] + unit_factors[category][unit][1]
+    return val * unit_factors[category][unit]
 
-def convert_temp_from_si(val, unit):
-    if pd.isna(val): return np.nan
-    return val - 273.15 if unit == "°C" else val
+def convert_from_SI(val, unit, category):
+    if pd.isna(val): return val
+    if category == "Temperature":
+        return (val - unit_factors[category][unit][1]) / unit_factors[category][unit][0]
+    return val / unit_factors[category][unit]
 
-# ==========================================
-# FONCTIONS DE MISE EN PAGE DU FORMALISME
-# ==========================================
-def display_theory(nom, usage, latex_form, hypotheses, limites):
-    with st.expander(f"📚 Théorie & Hypothèses : {nom}"):
-        st.markdown(f"**Cas d'usage :** {usage}")
-        st.latex(latex_form)
-        st.markdown(f"**Hypothèses :** {hypotheses}")
-        st.markdown(f"**Limitations :** {limites}")
+# =========================================================================
+st.header("1. Hydrostatique & Manomètres")
 
-# ==========================================
-# BARRE DE NAVIGATION LATÉRALE
-# ==========================================
-st.sidebar.title("🚀 AER Turbo-Boosté")
-page = st.sidebar.radio("Thématiques", ["1. Expérimental", "2. Similitude", "3. Compressible"])
+col1, col2 = st.columns(2)
 
-st.sidebar.markdown("---")
-st.sidebar.info("💡 **Astuce Réversibilité :** Laissez vide (ou effacez) la valeur que vous cherchez dans un tableau, le programme la calculera automatiquement à partir des autres !")
-
-# ==========================================
-# PAGE 1 : EXPÉRIMENTAL
-# ==========================================
-if page == "1. Expérimental":
-    st.title("🔬 Aérodynamique Expérimentale")
-
-    # --- BLOC 1 : TUBE DE PITOT (Incompressible) ---
-    st.header("1. Mesure de Vitesse (Tube de Pitot)")
-    display_theory(
-        nom="Vitesse Incompressible (Bernoulli / Torricelli)",
-        usage="Détermination de la vitesse, de la pression dynamique ou de la masse volumique.",
-        latex_form=r"V = \sqrt{\frac{2 \cdot \Delta P}{\rho}} \quad \iff \quad \Delta P = \frac{1}{2} \rho V^2",
-        hypotheses="Fluide incompressible ($\\rho = cte$), écoulement stationnaire, isentropique, fluide parfait.",
-        limites="Non valide pour les hautes vitesses (Mach > 0.3) où les effets de compressibilité apparaissent."
-    )
+with col1:
+    with st.expander("ℹ️ Manomètre à Eau"):
+        st.latex(r"\Delta P = \rho_{eau} \cdot g \cdot \Delta h")
+        
+    st.markdown("**Manomètre à Eau**")
     
-    col1, col2 = st.columns(2)
-    unit_p = col1.selectbox("Unité de Pression ($\Delta P$)", list(UNITS["Pression"].keys()), key="pitot_p")
-    unit_v = col2.selectbox("Unité de Vitesse ($V$)", list(UNITS["Vitesse"].keys()), key="pitot_v")
-
-    df_pitot = pd.DataFrame([
-        {"Delta P": 1500.0, "Rho (kg/m³)": 1.225, "Vitesse": None},
-        {"Delta P": None, "Rho (kg/m³)": 1.225, "Vitesse": 50.0}
-    ])
-
-    edited_pitot = st.data_editor(
-        df_pitot, num_rows="dynamic", use_container_width=True,
-        column_config={
-            "Delta P": f"ΔP Pression dyn. ({unit_p})",
-            "Vitesse": f"Vitesse calculée ({unit_v})"
-        }
-    )
+    col_u1_p, col_u1_h = st.columns(2)
+    with col_u1_p: u_p1 = st.selectbox("Unité Pression", ["Pa", "bar"], key="u_p1")
+    with col_u1_h: u_h1 = st.selectbox("Unité Hauteur", ["m", "cm", "mm"], key="u_h1")
+    factor_h1 = {"m":1.0, "cm":0.01, "mm":0.001}[u_h1]
     
-    if not edited_pitot.empty:
-        def solve_pitot(row):
-            dp_raw, rho, v_raw = row["Delta P"], row["Rho (kg/m³)"], row["Vitesse"]
-            dp = dp_raw * UNITS["Pression"][unit_p] if pd.notna(dp_raw) else np.nan
-            v = v_raw * UNITS["Vitesse"][unit_v] if pd.notna(v_raw) else np.nan
+    if 'eau_data' not in st.session_state:
+        st.session_state.eau_data = pd.DataFrame({"Rho_eau (kg/m3)": [997.0, 997.0], f"Delta P ({u_p1})": [9780.0, np.nan], f"Delta h ({u_h1})": [np.nan, 1.5]})
+        
+    # On force la mise à jour des entêtes au cas où l'utilisateur change les selectbox
+    st.session_state.eau_data.columns = ["Rho_eau (kg/m3)", f"Delta P ({u_p1})", f"Delta h ({u_h1})"]
 
-            if pd.isna(v) and pd.notna(dp) and pd.notna(rho) and rho > 0:
-                v = np.sqrt(max(0, 2 * dp / rho))
-            elif pd.isna(dp) and pd.notna(v) and pd.notna(rho):
-                dp = 0.5 * rho * v**2
-            elif pd.isna(rho) and pd.notna(dp) and pd.notna(v) and v > 0:
-                rho = 2 * dp / v**2
+    with st.form("form_eau"):
+        df_eau = st.data_editor(st.session_state.eau_data, num_rows="dynamic", use_container_width=True)
+        if st.form_submit_button("Calculer"):
+            for i, row in df_eau.iterrows():
+                rho = row["Rho_eau (kg/m3)"]
+                p_val = convert_to_SI(row[f"Delta P ({u_p1})"], u_p1, "Pression")
+                h_val = row[f"Delta h ({u_h1})"] * factor_h1
+                
+                if pd.isna(p_val) and not pd.isna(h_val) and not pd.isna(rho):
+                    p_val = rho * 9.81 * h_val
+                    df_eau.at[i, f"Delta P ({u_p1})"] = convert_from_SI(p_val, u_p1, "Pression")
+                elif pd.isna(h_val) and not pd.isna(p_val) and not pd.isna(rho):
+                    h_val = p_val / (rho * 9.81)
+                    df_eau.at[i, f"Delta h ({u_h1})"] = h_val / factor_h1
+            st.session_state.eau_data = df_eau
+            st.rerun()
 
-            row["Delta P"] = dp / UNITS["Pression"][unit_p] if pd.notna(dp) else np.nan
-            row["Rho (kg/m³)"] = rho
-            row["Vitesse"] = v / UNITS["Vitesse"][unit_v] if pd.notna(v) else np.nan
-            return row
+with col2:
+    with st.expander("ℹ️ Manomètre à Mercure"):
+        st.latex(r"\Delta P = \rho_{Hg} \cdot g \cdot \Delta h")
+        
+    st.markdown("**Manomètre à Mercure**")
+    
+    col_u2_p, col_u2_h = st.columns(2)
+    with col_u2_p: u_p2 = st.selectbox("Unité Pression", ["Pa", "bar"], key="u_p2")
+    with col_u2_h: u_h2 = st.selectbox("Unité Hauteur", ["m", "cm", "mm"], key="u_h2")
+    factor_h2 = {"m":1.0, "cm":0.01, "mm":0.001}[u_h2]
+    
+    if 'hg_data' not in st.session_state:
+        st.session_state.hg_data = pd.DataFrame({"Rho_Hg (kg/m3)": [13600.0, 13600.0], f"Delta P ({u_p2})": [101325.0, np.nan], f"Delta h ({u_h2})": [np.nan, 0.76]})
+        
+    st.session_state.hg_data.columns = ["Rho_Hg (kg/m3)", f"Delta P ({u_p2})", f"Delta h ({u_h2})"]
+
+    with st.form("form_hg"):
+        df_hg = st.data_editor(st.session_state.hg_data, num_rows="dynamic", use_container_width=True)
+        if st.form_submit_button("Calculer"):
+            for i, row in df_hg.iterrows():
+                rho = row["Rho_Hg (kg/m3)"]
+                p_val = convert_to_SI(row[f"Delta P ({u_p2})"], u_p2, "Pression")
+                h_val = row[f"Delta h ({u_h2})"] * factor_h2
+                
+                if pd.isna(p_val) and not pd.isna(h_val) and not pd.isna(rho):
+                    p_val = rho * 9.81 * h_val
+                    df_hg.at[i, f"Delta P ({u_p2})"] = convert_from_SI(p_val, u_p2, "Pression")
+                elif pd.isna(h_val) and not pd.isna(p_val) and not pd.isna(rho):
+                    h_val = p_val / (rho * 9.81)
+                    df_hg.at[i, f"Delta h ({u_h2})"] = h_val / factor_h2
+            st.session_state.hg_data = df_hg
+            st.rerun()
+
+# =========================================================================
+st.divider()
+st.header("2. Dynamique des Fluides")
+
+col3, col4 = st.columns(2)
+
+with col3:
+    with st.expander("ℹ️ Loi de Torricelli"):
+        st.write("**Cas d'usage:** Vitesse d'écoulement d'un fluide sous l'effet de la gravité.")
+        st.latex(r"U = \sqrt{2 \cdot g \cdot h}")
+        
+    st.markdown("**Loi de Torricelli**")
+    
+    col_u3_v, col_u3_h = st.columns(2)
+    with col_u3_v: u_v3 = st.selectbox("Unité Vitesse", ["m/s", "km/h"], key="u_v3")
+    with col_u3_h: u_h3 = st.selectbox("Unité Hauteur", ["m", "ft"], key="u_h3")
+    
+    if 'torri_data' not in st.session_state:
+        st.session_state.torri_data = pd.DataFrame({f"Vitesse U ({u_v3})": [np.nan, 10.0], f"Hauteur h ({u_h3})": [5.0, np.nan]})
+        
+    st.session_state.torri_data.columns = [f"Vitesse U ({u_v3})", f"Hauteur h ({u_h3})"]
+
+    with st.form("form_torri"):
+        df_torri = st.data_editor(st.session_state.torri_data, num_rows="dynamic", use_container_width=True)
+        if st.form_submit_button("Calculer"):
+            for i, row in df_torri.iterrows():
+                u_val = convert_to_SI(row[f"Vitesse U ({u_v3})"], u_v3, "Vitesse")
+                h_val = convert_to_SI(row[f"Hauteur h ({u_h3})"], u_h3, "Distance")
+                
+                if pd.isna(u_val) and not pd.isna(h_val) and h_val >= 0:
+                    u_val = np.sqrt(2 * 9.81 * h_val)
+                    df_torri.at[i, f"Vitesse U ({u_v3})"] = convert_from_SI(u_val, u_v3, "Vitesse")
+                elif pd.isna(h_val) and not pd.isna(u_val):
+                    h_val = (u_val**2) / (2 * 9.81)
+                    df_torri.at[i, f"Hauteur h ({u_h3})"] = convert_from_SI(h_val, u_h3, "Distance")
+            st.session_state.torri_data = df_torri
+            st.rerun()
+
+with col4:
+    with st.expander("ℹ️ Sonde Pitot (Incompressible)"):
+        st.write("**Cas d'usage:** Mesure de la vitesse via la pression dynamique (Mach < 0.3).")
+        st.latex(r"U = \sqrt{\frac{2 \cdot \Delta P}{\rho}}")
+        
+    st.markdown("**Sonde Pitot**")
+    
+    col_u4_v, col_u4_p = st.columns(2)
+    with col_u4_v: u_v4 = st.selectbox("Unité Vitesse", ["m/s", "km/h", "kt"], key="u_v4")
+    with col_u4_p: u_p4 = st.selectbox("Unité Pression", ["Pa", "bar"], key="u_p4")
+    
+    if 'pitot_data' not in st.session_state:
+        st.session_state.pitot_data = pd.DataFrame({f"Vitesse U ({u_v4})": [np.nan, 250.0], f"Delta P ({u_p4})": [44500.0, np.nan], "Rho (kg/m3)": [1.225, 1.225]})
+        
+    st.session_state.pitot_data.columns = [f"Vitesse U ({u_v4})", f"Delta P ({u_p4})", "Rho (kg/m3)"]
+
+    with st.form("form_pitot"):
+        df_pitot = st.data_editor(st.session_state.pitot_data, num_rows="dynamic", use_container_width=True)
+        if st.form_submit_button("Calculer"):
+            for i, row in df_pitot.iterrows():
+                u_val = convert_to_SI(row[f"Vitesse U ({u_v4})"], u_v4, "Vitesse")
+                p_val = convert_to_SI(row[f"Delta P ({u_p4})"], u_p4, "Pression")
+                rho = row["Rho (kg/m3)"]
+                
+                if pd.isna(u_val) and not pd.isna(p_val) and not pd.isna(rho) and p_val >= 0 and rho > 0:
+                    u_val = np.sqrt(2 * p_val / rho)
+                    df_pitot.at[i, f"Vitesse U ({u_v4})"] = convert_from_SI(u_val, u_v4, "Vitesse")
+                elif pd.isna(p_val) and not pd.isna(u_val) and not pd.isna(rho):
+                    p_val = 0.5 * rho * (u_val**2)
+                    df_pitot.at[i, f"Delta P ({u_p4})"] = convert_from_SI(p_val, u_p4, "Pression")
+            st.session_state.pitot_data = df_pitot
+            st.rerun()
+
+# =========================================================================
+st.divider()
+st.header("3. Thermodynamique & Atmosphère")
+
+with st.expander("ℹ️ Loi des Gaz Parfaits"):
+    st.latex(r"P = \rho \cdot r \cdot T")
+
+st.markdown("**Loi des Gaz Parfaits**")
+col_u5_p, col_u5_t = st.columns(2)
+with col_u5_p: u_p5 = st.selectbox("Unité Pression", ["Pa", "bar", "atm"], key="u_p5")
+with col_u5_t: u_t5 = st.selectbox("Unité Température", ["K", "°C"], key="u_t5")
+
+if 'gaz_data' not in st.session_state:
+    st.session_state.gaz_data = pd.DataFrame({
+        f"Pression P ({u_p5})": [101325.0, np.nan, 75600.0], 
+        "Densité Rho (kg/m3)": [1.225, 1.225, np.nan], 
+        f"Température T ({u_t5})": [np.nan, 288.15, 293.15],
+        "Constante r (J/kg.K)": [287.1, 287.1, 287.1]
+    })
+    
+st.session_state.gaz_data.columns = [f"Pression P ({u_p5})", "Densité Rho (kg/m3)", f"Température T ({u_t5})", "Constante r (J/kg.K)"]
+
+with st.form("form_gaz"):
+    df_gaz = st.data_editor(st.session_state.gaz_data, num_rows="dynamic", use_container_width=True)
+    if st.form_submit_button("Calculer"):
+        for i, row in df_gaz.iterrows():
+            p = convert_to_SI(row[f"Pression P ({u_p5})"], u_p5, "Pression")
+            rho = row["Densité Rho (kg/m3)"]
+            t = convert_to_SI(row[f"Température T ({u_t5})"], u_t5, "Temperature")
+            r = row["Constante r (J/kg.K)"]
             
-        st.success("Résultats :")
-        st.dataframe(edited_pitot.apply(solve_pitot, axis=1), use_container_width=True)
+            if pd.isna(p) and not pd.isna(rho) and not pd.isna(t) and not pd.isna(r):
+                p = rho * r * t
+                df_gaz.at[i, f"Pression P ({u_p5})"] = convert_from_SI(p, u_p5, "Pression")
+            elif pd.isna(rho) and not pd.isna(p) and not pd.isna(t) and not pd.isna(r) and t > 0:
+                rho = p / (r * t)
+                df_gaz.at[i, "Densité Rho (kg/m3)"] = rho
+            elif pd.isna(t) and not pd.isna(p) and not pd.isna(rho) and not pd.isna(r) and rho > 0:
+                t = p / (rho * r)
+                df_gaz.at[i, f"Température T ({u_t5})"] = convert_from_SI(t, u_t5, "Temperature")
+        st.session_state.gaz_data = df_gaz
+        st.rerun()
 
-    st.markdown("---")
+col5, col6 = st.columns(2)
 
-    # --- BLOC 2 : ATMOSPHÈRE STANDARD (ISA) ---
-    st.header("2. Atmosphère Standard (Troposphère)")
-    display_theory(
-        nom="Modèle ISA (International Standard Atmosphere)",
-        usage="Prédiction de la pression, température ou de l'altitude géopotentielle.",
-        latex_form=r"T = T_0 - L \cdot h \quad \text{et} \quad P = P_0 \left(1 - \frac{L \cdot h}{T_0}\right)^{\frac{g}{R \cdot L}}",
-        hypotheses="Gradient de température constant ($L = 0.0065$ K/m), gaz parfait, équilibre hydrostatique.",
-        limites="Uniquement valable dans la Troposphère (Altitude $h < 11 000$ m). Ne reflète pas la météo réelle."
-    )
-
-    col1, col2, col3 = st.columns(3)
-    unit_h = col1.selectbox("Unité d'Altitude", list(UNITS["Longueur"].keys()), key="isa_h")
-    unit_t_isa = col2.selectbox("Unité Température", ["K", "°C"], key="isa_t")
-    unit_p_isa = col3.selectbox("Unité Pression", list(UNITS["Pression"].keys()), key="isa_p")
-
-    df_isa = pd.DataFrame([
-        {"h": 5000.0, "T0": 15.0, "P0": 101325.0, "T": None, "P": None},
-        {"h": None, "T0": 15.0, "P0": 101325.0, "T": None, "P": 50000.0}
-    ])
+with col5:
+    with st.expander("ℹ️ Loi de Sutherland"):
+        st.write("**Cas d'usage:** Calcul de la viscosité dynamique de l'air selon la température.")
+        st.latex(r"\mu \approx \frac{B \sqrt{T}}{1 + A/T}")
+        
+    st.markdown("**Loi de Sutherland (Air)**")
+    col_u6_t = st.columns(1)[0]
+    u_t6 = col_u6_t.selectbox("Unité Température", ["K", "°C"], key="u_t6")
     
-    edited_isa = st.data_editor(
-        df_isa, num_rows="dynamic", use_container_width=True,
-        column_config={
-            "h": f"Altitude ({unit_h})", "T0": f"T0 ({unit_t_isa})", "P0": f"P0 ({unit_p_isa})",
-            "T": f"Température ({unit_t_isa})", "P": f"Pression ({unit_p_isa})"
-        }
-    )
+    if 'suth_data' not in st.session_state:
+        st.session_state.suth_data = pd.DataFrame({
+            f"Température T ({u_t6})": [293.15, np.nan], 
+            "Viscosité Mu (Pa.s)": [np.nan, 1.81e-5],
+            "Constante A": [114.0, 114.0],
+            "Constante B": [1.458e-6, 1.458e-6]
+        })
+        
+    st.session_state.suth_data.columns = [f"Température T ({u_t6})", "Viscosité Mu (Pa.s)", "Constante A", "Constante B"]
 
-    if not edited_isa.empty:
-        def solve_isa(row):
-            h_raw, t0_raw, p0_raw, t_raw, p_raw = row["h"], row["T0"], row["P0"], row["T"], row["P"]
-            h = h_raw * UNITS["Longueur"][unit_h] if pd.notna(h_raw) else np.nan
-            t0 = convert_temp_to_si(t0_raw, unit_t_isa) if pd.notna(t0_raw) else np.nan
-            p0 = p0_raw * UNITS["Pression"][unit_p_isa] if pd.notna(p0_raw) else np.nan
-            t = convert_temp_to_si(t_raw, unit_t_isa) if pd.notna(t_raw) else np.nan
-            p = p_raw * UNITS["Pression"][unit_p_isa] if pd.notna(p_raw) else np.nan
+    with st.form("form_suth"):
+        df_suth = st.data_editor(st.session_state.suth_data, num_rows="dynamic", use_container_width=True)
+        if st.form_submit_button("Calculer"):
+            for i, row in df_suth.iterrows():
+                t = convert_to_SI(row[f"Température T ({u_t6})"], u_t6, "Temperature")
+                mu = row["Viscosité Mu (Pa.s)"]
+                A, B = row["Constante A"], row["Constante B"]
+                
+                if pd.isna(mu) and not pd.isna(t) and t > 0:
+                    mu = (B * np.sqrt(t)) / (1 + A/t)
+                    df_suth.at[i, "Viscosité Mu (Pa.s)"] = mu
+                elif pd.isna(t) and not pd.isna(mu) and mu > 0:
+                    # Sutherland inverse -> fsolve (résolution numérique)
+                    def eq(T_guess): return ((B * np.sqrt(T_guess)) / (1 + A/T_guess)) - mu
+                    t_sol = fsolve(eq, 288.15)[0]
+                    df_suth.at[i, f"Température T ({u_t6})"] = convert_from_SI(t_sol, u_t6, "Temperature")
+            st.session_state.suth_data = df_suth
+            st.rerun()
 
-            L, g, R = 0.0065, 9.80665, 287.05
-
-            if pd.isna(h) and pd.notna(t0):
-                if pd.notna(t): h = (t0 - t) / L
-                elif pd.notna(p) and pd.notna(p0): h = (t0 / L) * (1 - (p / p0)**(R * L / g))
-
-            if pd.notna(h) and pd.notna(t0) and pd.isna(t):
-                t = t0 - L * h
-            if pd.notna(h) and pd.notna(p0) and pd.notna(t0) and pd.isna(p):
-                p = p0 * (1 - L * h / t0)**(g / (R * L))
-
-            row["h"] = h / UNITS["Longueur"][unit_h] if pd.notna(h) else np.nan
-            row["T"] = convert_temp_from_si(t, unit_t_isa) if pd.notna(t) else np.nan
-            row["P"] = p / UNITS["Pression"][unit_p_isa] if pd.notna(p) else np.nan
-            return row
-            
-        st.success("Résultats :")
-        st.dataframe(edited_isa.apply(solve_isa, axis=1), use_container_width=True)
-
-    st.markdown("---")
-
-    # --- BLOC 3 : GAZ PARFAITS ---
-    st.header("3. Loi des Gaz Parfaits")
-    display_theory(
-        nom="Équation d'état des gaz parfaits",
-        usage="Relier la pression, la masse volumique et la température.",
-        latex_form=r"P = \rho \cdot r \cdot T",
-        hypotheses="Gaz parfait (pas d'interactions entre les molécules, volume propre nul).",
-        limites="Dévie de la réalité à très haute pression ou très basse température."
-    )
-
-    df_gaz = pd.DataFrame([
-        {"P": None, "Rho": 1.225, "r": 287.05, "T": 288.15},
-        {"P": 101325.0, "Rho": None, "r": 287.05, "T": 288.15},
-        {"P": 101325.0, "Rho": 1.225, "r": 287.05, "T": None},
-    ])
+with col6:
+    with st.expander("ℹ️ Atmosphère Standard (ISA)"):
+        st.write("**Cas d'usage:** Pression en fonction de l'altitude géopotentielle.")
+        st.latex(r"Z < 11 km : P = P_0 \left( 1 - \frac{s \cdot Z}{100 \cdot T_0} \right)^{\frac{100 \cdot g}{r \cdot s}}")
+        st.latex(r"Z > 11 km : P = P_{11} \cdot \exp\left(-\frac{g \cdot (Z - 11000)}{r \cdot T_{11}}\right)")
+        
+    st.markdown("**Modèle ISA (Pression / Altitude)**")
     
-    edited_gaz = st.data_editor(
-        df_gaz, num_rows="dynamic", use_container_width=True,
-        column_config={"P": "Pression (Pa)", "Rho": "Rho (kg/m³)", "r": "r (J/kg.K)", "T": "Température (K)"}
-    )
-
-    if not edited_gaz.empty:
-        def solve_gas(row):
-            p, rho, r, t = row["P"], row["Rho"], row["r"], row["T"]
-            if pd.isna(p) and not pd.isna(rho) and not pd.isna(t) and not pd.isna(r): row["P"] = rho * r * t
-            elif pd.isna(rho) and not pd.isna(p) and not pd.isna(t) and not pd.isna(r) and t != 0: row["Rho"] = p / (r * t)
-            elif pd.isna(t) and not pd.isna(p) and not pd.isna(rho) and not pd.isna(r) and rho != 0: row["T"] = p / (rho * r)
-            return row
-            
-        st.success("Résultats :")
-        st.dataframe(edited_gaz.apply(solve_gas, axis=1), use_container_width=True)
-
-# ==========================================
-# PAGE 2 : SIMILITUDE
-# ==========================================
-elif page == "2. Similitude":
-    st.title("⚖️ Similitude et Coefficients")
-
-    # --- BLOC 1 : NOMBRE DE MACH ---
-    st.header("1. Nombre de Mach")
-    display_theory(
-        nom="Vitesse du son et Nombre de Mach",
-        usage="Caractérisation de la compressibilité d'un écoulement.",
-        latex_form=r"a = \sqrt{\gamma R T} \quad \text{et} \quad M = \frac{V}{a}",
-        hypotheses="Le fluide est considéré comme un gaz parfait. Propriétés locales.",
-        limites="R et gamma dépendent du gaz."
-    )
-
-    col1, col2 = st.columns(2)
-    unit_v = col1.selectbox("Unité de Vitesse", list(UNITS["Vitesse"].keys()), key="mach_v")
-    unit_t = col2.selectbox("Unité de Température", ["K", "°C"], key="mach_t")
-
-    df_mach = pd.DataFrame([
-        {"V": 250.0, "T": 15.0, "Gamma": 1.4, "R": 287.05, "a": None, "M": None},
-        {"V": None, "T": 15.0, "Gamma": 1.4, "R": 287.05, "a": None, "M": 0.8}
-    ])
+    col_u7_z, col_u7_p = st.columns(2)
+    with col_u7_z: u_z7 = st.selectbox("Unité Altitude", ["m", "ft", "km"], key="u_z7")
+    with col_u7_p: u_p7 = st.selectbox("Unité Pression", ["Pa", "bar", "atm"], key="u_p7")
     
-    edited_mach = st.data_editor(
-        df_mach, num_rows="dynamic", use_container_width=True,
-        column_config={
-            "V": f"Vitesse V ({unit_v})", "T": f"Température T ({unit_t})",
-            "a": f"Vitesse du son a ({unit_v})", "M": "Mach M"
-        }
-    )
+    if 'isa_data' not in st.session_state:
+        st.session_state.isa_data = pd.DataFrame({
+            f"Altitude Z ({u_z7})": [2400.0, 20000.0, np.nan], 
+            f"Pression P ({u_p7})": [np.nan, np.nan, 50000.0],
+            "P0 (Pa)": [101325.0]*3, "T0 (K)": [288.15]*3, 
+            "s (K/100m)": [0.65]*3
+        })
+        
+    st.session_state.isa_data.columns = [f"Altitude Z ({u_z7})", f"Pression P ({u_p7})", "P0 (Pa)", "T0 (K)", "s (K/100m)"]
 
-    if not edited_mach.empty:
-        def solve_mach(row):
-            v_raw, t_raw, gamma, r, a_raw, m = row["V"], row["T"], row["Gamma"], row["R"], row["a"], row["M"]
-            v = v_raw * UNITS["Vitesse"][unit_v] if pd.notna(v_raw) else np.nan
-            t = convert_temp_to_si(t_raw, unit_t) if pd.notna(t_raw) else np.nan
-            a = a_raw * UNITS["Vitesse"][unit_v] if pd.notna(a_raw) else np.nan
-
-            if pd.isna(a) and pd.notna(t) and pd.notna(gamma) and pd.notna(r):
-                a = np.sqrt(gamma * r * t)
-            elif pd.isna(t) and pd.notna(a) and pd.notna(gamma) and pd.notna(r):
-                t = a**2 / (gamma * r)
-
-            if pd.isna(m) and pd.notna(v) and pd.notna(a) and a > 0:
-                m = v / a
-            elif pd.isna(v) and pd.notna(m) and pd.notna(a):
-                v = m * a
-            elif pd.isna(a) and pd.notna(m) and pd.notna(v) and m > 0:
-                a = v / m
-                if pd.isna(t) and pd.notna(gamma) and pd.notna(r):
-                    t = a**2 / (gamma * r)
-
-            row["V"] = v / UNITS["Vitesse"][unit_v] if pd.notna(v) else np.nan
-            row["T"] = convert_temp_from_si(t, unit_t) if pd.notna(t) else np.nan
-            row["a"] = a / UNITS["Vitesse"][unit_v] if pd.notna(a) else np.nan
-            row["M"] = m
-            return row
-
-        st.success("Résultats :")
-        st.dataframe(edited_mach.apply(solve_mach, axis=1), use_container_width=True)
-
-    st.markdown("---")
-
-    # --- BLOC 2 : COEFFICIENTS AERODYNAMIQUES ---
-    st.header("2. Coefficients Aérodynamiques")
-    display_theory(
-        nom="Coefficients d'Efforts",
-        usage="Passage des efforts physiques (Portance, Traînée) aux coefficients adimensionnels.",
-        latex_form=r"q = \frac{1}{2} \rho V^2 \quad \text{et} \quad C_x = \frac{F}{q S}",
-        hypotheses="Écoulement incompressible par défaut pour la pression dynamique.",
-        limites="Ne tient pas compte des effets d'échelle (Reynolds) ni de compressibilité (Mach)."
-    )
-
-    col1, col2 = st.columns(2)
-    unit_v2 = col1.selectbox("Unité de Vitesse ($V$)", list(UNITS["Vitesse"].keys()), key="coef_v")
-    unit_f = col2.selectbox("Unité de Force ($F$)", list(UNITS["Force"].keys()), key="coef_f")
-    
-    df_coef = pd.DataFrame([
-        {"F": 5000.0, "Rho": 1.225, "V": 50.0, "S": 15.0, "q": None, "C": None},
-        {"F": None, "Rho": 1.225, "V": 50.0, "S": 15.0, "q": None, "C": 0.3}
-    ])
-    
-    edited_coef = st.data_editor(
-        df_coef, num_rows="dynamic", use_container_width=True,
-        column_config={
-            "F": f"Force ({unit_f})", "Rho": "Rho (kg/m³)", "V": f"Vitesse ({unit_v2})",
-            "S": "Surface S (m²)", "q": "Pression Dyn q (Pa)", "C": "Coefficient Cx/Cz"
-        }
-    )
-
-    if not edited_coef.empty:
-        def solve_coef(row):
-            f_raw, rho, v_raw, s, q, c = row["F"], row["Rho"], row["V"], row["S"], row["q"], row["C"]
-            v = v_raw * UNITS["Vitesse"][unit_v2] if pd.notna(v_raw) else np.nan
-            f = f_raw * UNITS["Force"][unit_f] if pd.notna(f_raw) else np.nan
-
-            if pd.isna(q) and pd.notna(rho) and pd.notna(v):
-                q = 0.5 * rho * v**2
-            elif pd.isna(v) and pd.notna(q) and pd.notna(rho) and rho > 0:
-                v = np.sqrt(2 * q / rho)
-            elif pd.isna(rho) and pd.notna(q) and pd.notna(v) and v > 0:
-                rho = 2 * q / v**2
-
-            if pd.isna(c) and pd.notna(f) and pd.notna(q) and pd.notna(s) and q*s > 0:
-                c = f / (q * s)
-            elif pd.isna(f) and pd.notna(c) and pd.notna(q) and pd.notna(s):
-                f = c * q * s
-            elif pd.isna(s) and pd.notna(f) and pd.notna(c) and pd.notna(q) and c*q > 0:
-                s = f / (c * q)
-            elif pd.isna(q) and pd.notna(f) and pd.notna(c) and pd.notna(s) and c*s > 0:
-                q = f / (c * s)
-                if pd.isna(v) and pd.notna(rho) and rho > 0: v = np.sqrt(2 * q / rho)
-
-            row["F"] = f / UNITS["Force"][unit_f] if pd.notna(f) else np.nan
-            row["V"] = v / UNITS["Vitesse"][unit_v2] if pd.notna(v) else np.nan
-            row["Rho"], row["S"], row["q"], row["C"] = rho, s, q, c
-            return row
-            
-        st.success("Résultats :")
-        st.dataframe(edited_coef.apply(solve_coef, axis=1), use_container_width=True)
-
-# ==========================================
-# PAGE 3 : COMPRESSIBLE
-# ==========================================
-elif page == "3. Compressible":
-    st.title("💨 Aérodynamique Compressible")
-
-    # --- BLOC 1 : RELATIONS ISENTROPIQUES ---
-    st.header("1. Propriétés Génératrices (Relations Isentropiques)")
-    display_theory(
-        nom="Lois Isentropiques 1D",
-        usage="Lien entre les propriétés locales (statiques) et génératrices (d'arrêt, totales).",
-        latex_form=r"\frac{T_0}{T} = 1 + \frac{\gamma - 1}{2}M^2 \quad \text{et} \quad \frac{P_0}{P} = \left(1 + \frac{\gamma - 1}{2}M^2\right)^{\frac{\gamma}{\gamma - 1}}",
-        hypotheses="Écoulement isentropique (adiabatique et réversible), gaz parfait.",
-        limites="Faux s'il y a des chocs (non-isentropique), apports de chaleur ou frottements majeurs."
-    )
-
-    col1, col2 = st.columns(2)
-    unit_p = col1.selectbox("Unité de Pression", list(UNITS["Pression"].keys()), key="comp_p")
-    unit_t = col2.selectbox("Unité de Température", ["K", "°C"], key="comp_t")
-
-    df_isen = pd.DataFrame([
-        {"M": 0.8, "Ts": 15.0, "Ps": 80000.0, "Tt": None, "Pt": None, "g": 1.4},
-        {"M": None, "Ts": 15.0, "Ps": None, "Tt": 45.0, "Pt": None, "g": 1.4}
-    ])
-    
-    edited_isen = st.data_editor(
-        df_isen, num_rows="dynamic", use_container_width=True,
-        column_config={
-            "M": "Mach", "g": "Gamma",
-            "Ts": f"T statique ({unit_t})", "Ps": f"P statique ({unit_p})",
-            "Tt": f"T totale/arrêt ({unit_t})", "Pt": f"P totale/arrêt ({unit_p})"
-        }
-    )
-
-    if not edited_isen.empty:
-        def solve_isen(row):
-            m, ts_raw, ps_raw, tt_raw, pt_raw, g = row["M"], row["Ts"], row["Ps"], row["Tt"], row["Pt"], row["g"]
-            ts = convert_temp_to_si(ts_raw, unit_t) if pd.notna(ts_raw) else np.nan
-            tt = convert_temp_to_si(tt_raw, unit_t) if pd.notna(tt_raw) else np.nan
-            ps = ps_raw * UNITS["Pression"][unit_p] if pd.notna(ps_raw) else np.nan
-            pt = pt_raw * UNITS["Pression"][unit_p] if pd.notna(pt_raw) else np.nan
-
-            if pd.isna(m) and pd.notna(g):
-                if pd.notna(tt) and pd.notna(ts) and ts > 0:
-                    val = (tt/ts - 1) * 2 / (g - 1)
-                    if val >= 0: m = np.sqrt(val)
-                elif pd.notna(pt) and pd.notna(ps) and ps > 0:
-                    val = ((pt/ps)**((g-1)/g) - 1) * 2 / (g - 1)
-                    if val >= 0: m = np.sqrt(val)
-
-            if pd.notna(m) and pd.notna(g):
-                t_ratio = 1 + ((g - 1) / 2) * m**2
-                p_ratio = t_ratio ** (g / (g - 1))
-
-                if pd.isna(tt) and pd.notna(ts): tt = ts * t_ratio
-                if pd.isna(ts) and pd.notna(tt): ts = tt / t_ratio
-                if pd.isna(pt) and pd.notna(ps): pt = ps * p_ratio
-                if pd.isna(ps) and pd.notna(pt): ps = pt / p_ratio
-
-            row["M"] = m
-            row["Ts"] = convert_temp_from_si(ts, unit_t) if pd.notna(ts) else np.nan
-            row["Tt"] = convert_temp_from_si(tt, unit_t) if pd.notna(tt) else np.nan
-            row["Ps"] = ps / UNITS["Pression"][unit_p] if pd.notna(ps) else np.nan
-            row["Pt"] = pt / UNITS["Pression"][unit_p] if pd.notna(pt) else np.nan
-            return row
-            
-        st.success("Résultats :")
-        st.dataframe(edited_isen.apply(solve_isen, axis=1), use_container_width=True)
-
-    st.markdown("---")
-
-    # --- BLOC 2 : RELATIONS DES AIRES ---
-    st.header("2. Tuyères et Relation des Aires ($A/A^*$)")
-    display_theory(
-        nom="Fonction d'Aire (Théorème d'Hugoniot)",
-        usage="Détermination de l'évolution de la section d'une tuyère en fonction du Mach (ou inversement).",
-        latex_form=r"\frac{A}{A^*} = \frac{1}{M} \left[ \frac{2}{\gamma + 1} \left( 1 + \frac{\gamma - 1}{2} M^2 \right) \right]^{\frac{\gamma + 1}{2(\gamma - 1)}}",
-        hypotheses="Écoulement quasi-1D, isentropique, gaz parfait. $A^*$ est la section critique (Mach = 1).",
-        limites="Solveur numérique utilisé pour déduire Mach à partir du ratio d'aire (Préciser le régime !)."
-    )
-
-    df_area = pd.DataFrame([
-        {"M": 2.0, "g": 1.4, "As": 0.05, "A": None, "R": None, "Regime": "Supersonique"},
-        {"M": None, "g": 1.4, "As": 0.05, "A": None, "R": 2.5, "Regime": "Subsonique"}
-    ])
-    
-    edited_area = st.data_editor(
-        df_area, num_rows="dynamic", use_container_width=True,
-        column_config={
-            "M": "Mach", "g": "Gamma", "As": "Section A* (m²)", "A": "Section A (m²)", "R": "Ratio A/A*",
-            "Regime": st.column_config.SelectboxColumn("Régime cible", options=["Subsonique", "Supersonique"], required=True)
-        }
-    )
-
-    if not edited_area.empty:
-        def area_ratio_func(M, gamma):
-            if M <= 0: return np.nan
-            term1 = 2 / (gamma + 1)
-            term2 = 1 + ((gamma - 1) / 2) * M**2
-            power = (gamma + 1) / (2 * (gamma - 1))
-            return (1 / M) * ((term1 * term2) ** power)
-
-        def solve_area(row):
-            m, g, a_star, a, ratio, regime = row["M"], row["g"], row["As"], row["A"], row["R"], row["Regime"]
-
-            if pd.isna(ratio) and pd.notna(a) and pd.notna(a_star) and a_star > 0:
-                ratio = a / a_star
-
-            if pd.isna(m) and pd.notna(ratio) and pd.notna(g) and ratio >= 1:
-                def obj(M): return area_ratio_func(M, g) - ratio
-                try:
-                    if regime == "Subsonique":
-                        sol = root_scalar(obj, bracket=[1e-4, 1.0])
-                        m = sol.root
-                    elif regime == "Supersonique":
-                        sol = root_scalar(obj, bracket=[1.0, 20.0])
-                        m = sol.root
-                except:
-                    pass
-
-            if pd.notna(m) and pd.notna(g) and pd.isna(ratio):
-                ratio = area_ratio_func(m, g)
-                regime = "Supersonique" if m > 1 else "Subsonique"
-
-            if pd.notna(ratio):
-                if pd.isna(a) and pd.notna(a_star): a = ratio * a_star
-                if pd.isna(a_star) and pd.notna(a): a_star = a / ratio
-
-            row["M"], row["R"], row["As"], row["A"], row["Regime"] = m, ratio, a_star, a, regime
-            return row
-
-        st.success("Résultats :")
-        st.dataframe(edited_area.apply(solve_area, axis=1), use_container_width=True)
+    with st.form("form_isa"):
+        df_isa = st.data_editor(st.session_state.isa_data, num_rows="dynamic", use_container_width=True)
+        if st.form_submit_button("Calculer"):
+            for i, row in df_isa.iterrows():
+                z = convert_to_SI(row[f"Altitude Z ({u_z7})"], u_z7, "Distance")
+                p = convert_to_SI(row[f"Pression P ({u_p7})"], u_p7, "Pression")
+                p0, t0, s = row["P0 (Pa)"], row["T0 (K)"], row["s (K/100m)"]
+                g, r = 9.81, 287.1
+                
+                # Constantes stratosphère
+                p11 = p0 * (1 - (s*11000)/(100*t0))**((100*g)/(r*s))
+                t11 = t0 - (s*11000/100)
+                
+                if pd.isna(p) and not pd.isna(z):
+                    if z <= 11000:
+                        p = p0 * (1 - (s*z)/(100*t0))**((100*g)/(r*s))
+                    else:
+                        p = p11 * np.exp(-g*(z-11000)/(r*t11))
+                    df_isa.at[i, f"Pression P ({u_p7})"] = convert_from_SI(p, u_p7, "Pression")
+                
+                elif pd.isna(z) and not pd.isna(p):
+                    if p >= p11:
+                        z = (100*t0/s) * (1 - (p/p0)**((r*s)/(100*g)))
+                    else:
+                        z = 11000 - (np.log(p/p11) * r * t11 / g)
+                    df_isa.at[i, f"Altitude Z ({u_z7})"] = convert_from_SI(z, u_z7, "Distance")
+                    
+            st.session_state.isa_data = df_isa
+            st.rerun()
