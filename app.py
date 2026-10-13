@@ -257,15 +257,17 @@ with tab1:
 
     with col6:
         with st.expander("ℹ️ Standard Atmosphere (ISA)"):
-            st.markdown("**Use case:** Standard Pressure and Temperature model.\n\n- **Assumptions:** Calm atmosphere, dry air, ideal gas.\n- **Limits:** Does not account for local weather or humidity.")
-            st.latex(r"Z < 11 km : P = P_0 \left( 1 - \frac{s Z}{100 T_0} \right)^{\frac{100 g}{r s}} \quad|\quad Z > 11 : P = P_{11} \exp\left(-\frac{g(Z - 11000)}{r T_{11}}\right)")
+            st.markdown("**Use case:** Standard Pressure and Temperature model.\n\n- **Assumptions:** Calm atmosphere, dry air, ideal gas.\n- **Limits:** Does not account for local weather or humidity. Calculating Altitude from Temperature is only mathematically reversible in the troposphere ($Z \le 11$ km).")
+            st.latex(r"Z \le 11 \text{ km} : T = T_0 - \frac{s Z}{100} \quad|\quad P = P_0 \left( 1 - \frac{s Z}{100 T_0} \right)^{\frac{100 g}{r s}}")
+            st.latex(r"Z > 11 \text{ km} : T = T_{11} \quad|\quad P = P_{11} \exp\left(-\frac{g(Z - 11000)}{r T_{11}}\right)")
             
-        col_u7_z, col_u7_p = st.columns(2)
+        col_u7_z, col_u7_p, col_u7_t = st.columns(3)
         with col_u7_z: u_z7 = st.selectbox("Altitude Unit", ["m", "ft", "km"], key="u_z7")
         with col_u7_p: u_p7 = st.selectbox("Pressure Unit", ["Pa", "bar", "atm"], key="u_p7_isa")
+        with col_u7_t: u_t7_isa = st.selectbox("Temp Unit", ["K", "°C"], key="u_t7_isa")
         
-        cols = ["P0 (Pa)", "T0 (K)", "s (K/100m)", f"Alt Z ({u_z7})", f"Pressure ({u_p7})"]
-        init_state('isa', pd.DataFrame([[101325.0, 288.15, 0.65, np.nan, np.nan]], columns=cols))
+        cols = ["P0 (Pa)", "T0 (K)", "s (K/100m)", f"Alt Z ({u_z7})", f"Pressure ({u_p7})", f"Temp ({u_t7_isa})"]
+        init_state('isa', pd.DataFrame([[101325.0, 288.15, 0.65, np.nan, np.nan, np.nan]], columns=cols))
         st.session_state['isa'].columns = cols
 
         with st.form("form_isa"):
@@ -273,21 +275,58 @@ with tab1:
             if st.form_submit_button("Calculate ISA"):
                 for i, row in df_isa.iterrows():
                     changed = get_changed_cols(row, st.session_state['isa_prev'].iloc[i]) if i < len(st.session_state['isa_prev']) else list(row.index)
-                    target = get_target([f"Alt Z ({u_z7})", f"Pressure ({u_p7})"], changed, row)
                     
+                    z_col = f"Alt Z ({u_z7})"
+                    p_col = f"Pressure ({u_p7})"
+                    t_col = f"Temp ({u_t7_isa})"
+                    
+                    # 1. Détermination de la variable source (modifiée ou déjà présente)
+                    source = None
+                    if z_col in changed and not pd.isna(row[z_col]): source = "Z"
+                    elif p_col in changed and not pd.isna(row[p_col]): source = "P"
+                    elif t_col in changed and not pd.isna(row[t_col]): source = "T"
+                    
+                    if not source:
+                        if not pd.isna(row[z_col]): source = "Z"
+                        elif not pd.isna(row[p_col]): source = "P"
+                        elif not pd.isna(row[t_col]): source = "T"
+                    
+                    # 2. Récupération des constantes et conversion SI
                     p0, t0, s = row["P0 (Pa)"], row["T0 (K)"], row["s (K/100m)"]
-                    z = convert_to_SI(row[f"Alt Z ({u_z7})"], u_z7, "Distance")
-                    p = convert_to_SI(row[f"Pressure ({u_p7})"], u_p7, "Pressure")
+                    z = convert_to_SI(row[z_col], u_z7, "Distance")
+                    p = convert_to_SI(row[p_col], u_p7, "Pressure")
+                    t = convert_to_SI(row[t_col], u_t7_isa, "Temperature")
+                    
                     g, r = 9.81, 287.05
                     p11 = p0 * (1 - (s*11000)/(100*t0))**((100*g)/(r*s))
                     t11 = t0 - (s*11000/100)
                     
-                    if target == f"Pressure ({u_p7})" and not pd.isna(z):
-                        res = p0 * (1 - (s*z)/(100*t0))**((100*g)/(r*s)) if z <= 11000 else p11 * np.exp(-g*(z-11000)/(r*t11))
-                        df_isa.at[i, target] = convert_from_SI(res, u_p7, "Pressure")
-                    elif target == f"Alt Z ({u_z7})" and not pd.isna(p):
-                        res = (100*t0/s) * (1 - (p/p0)**((r*s)/(100*g))) if p >= p11 else 11000 - (np.log(p/p11) * r * t11 / g)
-                        df_isa.at[i, target] = convert_from_SI(res, u_z7, "Distance")
+                    # 3. Calculs croisés bidirectionnels (Réversibilité Totale)
+                    if source == "Z":
+                        p_val = p0 * (1 - (s*z)/(100*t0))**((100*g)/(r*s)) if z <= 11000 else p11 * np.exp(-g*(z-11000)/(r*t11))
+                        t_val = t0 - (s*z/100) if z <= 11000 else t11
+                        df_isa.at[i, p_col] = convert_from_SI(p_val, u_p7, "Pressure")
+                        df_isa.at[i, t_col] = convert_from_SI(t_val, u_t7_isa, "Temperature")
+                        
+                    elif source == "P":
+                        z_val = (100*t0/s) * (1 - (p/p0)**((r*s)/(100*g))) if p >= p11 else 11000 - (np.log(p/p11) * r * t11 / g)
+                        t_val = t0 - (s*z_val/100) if z_val <= 11000 else t11
+                        df_isa.at[i, z_col] = convert_from_SI(z_val, u_z7, "Distance")
+                        df_isa.at[i, t_col] = convert_from_SI(t_val, u_t7_isa, "Temperature")
+                        
+                    elif source == "T":
+                        # Garde-fou pour la stratosphère : température bloquée à T11 min
+                        if t <= t11:
+                            z_val = 11000
+                            df_isa.at[i, t_col] = convert_from_SI(t11, u_t7_isa, "Temperature") # Override T entré
+                        else:
+                            z_val = (t0 - t) * 100 / s
+                            
+                        p_val = p0 * (1 - (s*z_val)/(100*t0))**((100*g)/(r*s))
+                        
+                        df_isa.at[i, z_col] = convert_from_SI(z_val, u_z7, "Distance")
+                        df_isa.at[i, p_col] = convert_from_SI(p_val, u_p7, "Pressure")
+
                 st.session_state['isa'] = df_isa
                 st.session_state['isa_prev'] = df_isa.copy()
                 st.rerun()
