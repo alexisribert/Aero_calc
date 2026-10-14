@@ -588,14 +588,13 @@ with tab4:
     col1, col2 = st.columns(2)
     with col1:
         with st.expander("ℹ️ Pressure Altitude (Hp)"):
-            st.markdown("**Use case:** Standard altimeter setting (1013.25 hPa) to determine flight levels (FL).\n\n- **Assumptions:** Standard atmosphere model (ISA) in the troposphere.\n- **Limits:** Differs from geometric altitude if local weather (pressure) deviates from standard.")
+            st.markdown("**Use case:** Standard altimeter setting (1013.25 hPa) to determine flight levels (FL)[span_0](start_span)[span_0](end_span).\n\n- **Assumptions:** Standard atmosphere model (ISA) in the troposphere[span_1](start_span)[span_1](end_span).\n- **Limits:** Differs from geometric altitude if local weather (pressure) deviates from standard.")
             st.latex(r"H_p = \frac{288.15}{0.0065} \left[ 1 - \left( \frac{P_\infty}{P_0} \right)^{\frac{1}{5.2559}} \right]")
             
         col_u8_p, col_u8_h = st.columns(2)
         with col_u8_p: u_p8 = st.selectbox("Pressure Unit", ["Pa", "hPa", "bar"], key="u_p8")
         with col_u8_h: u_h8 = st.selectbox("Altitude Unit", ["ft", "m"], key="u_h8")
         
-        # Ajout de l'unité hPa dans le dictionnaire "Pressure"
         if "hPa" not in unit_factors["Pressure"]: unit_factors["Pressure"]["hPa"] = 100.0
         
         cols = ["P0 (Pa)", f"P_inf ({u_p8})", f"Hp ({u_h8})"]
@@ -607,24 +606,34 @@ with tab4:
             if st.form_submit_button("Calculate Hp"):
                 for i, row in df_hp.iterrows():
                     changed = get_changed_cols(row, st.session_state['hp_prev'].iloc[i]) if i < len(st.session_state['hp_prev']) else list(row.index)
-                    target = get_target([f"P_inf ({u_p8})", f"Hp ({u_h8})"], changed, row)
-                    p0 = row["P0 (Pa)"]
                     
-                    if target == f"Hp ({u_h8})" and not pd.isna(row[f"P_inf ({u_p8})"]):
-                        p_inf = convert_to_SI(row[f"P_inf ({u_p8})"], u_p8, "Pressure")
-                        hp_val = (288.15 / 0.0065) * (1 - (p_inf / p0)**(1/5.2559))
-                        df_hp.at[i, target] = convert_from_SI(hp_val, u_h8, "Distance")
-                    elif target == f"P_inf ({u_p8})" and not pd.isna(row[f"Hp ({u_h8})"]):
-                        hp_val = convert_to_SI(row[f"Hp ({u_h8})"], u_h8, "Distance")
-                        p_inf = p0 * (1 - (0.0065 * hp_val) / 288.15)**5.2559
-                        df_hp.at[i, target] = convert_from_SI(p_inf, u_p8, "Pressure")
+                    z_col = f"Hp ({u_h8})"
+                    p_col = f"P_inf ({u_p8})"
+                    
+                    # Détection stricte de la variable source modifiée
+                    source = next((v for v in [z_col, p_col] if v in changed and not pd.isna(row[v])), None)
+                    if not source: source = next((v for v in [z_col, p_col] if not pd.isna(row[v])), None)
+                    
+                    p0 = row["P0 (Pa)"]
+                    if not pd.isna(p0) and p0 > 0:
+                        if source == z_col:
+                            hp_val = convert_to_SI(row[z_col], u_h8, "Distance")
+                            base = max(0.0, 1 - (0.0065 * hp_val) / 288.15)
+                            p_inf = p0 * (base)**5.2559
+                            df_hp.at[i, p_col] = convert_from_SI(p_inf, u_p8, "Pressure")
+                        elif source == p_col:
+                            p_inf = convert_to_SI(row[p_col], u_p8, "Pressure")
+                            base = max(0.0, p_inf / p0)
+                            hp_val = (288.15 / 0.0065) * (1 - (base)**(1/5.2559))
+                            df_hp.at[i, z_col] = convert_from_SI(hp_val, u_h8, "Distance")
+                            
                 st.session_state['hp'] = df_hp
                 st.session_state['hp_prev'] = df_hp.copy()
                 st.rerun()
 
     with col2:
         with st.expander("ℹ️ Density Altitude (Hd)"):
-            st.markdown("**Use case:** Evaluation of aerodynamic performance and true aircraft lift.\n\n- **Assumptions:** Standard atmosphere.\n- **Limits:** High temperatures strongly increase Hd, degrading takeoff performance.")
+            st.markdown("**Use case:** Evaluation of aerodynamic performance and true aircraft lift[span_2](start_span)[span_2](end_span).\n\n- **Assumptions:** Standard atmosphere[span_3](start_span)[span_3](end_span).\n- **Limits:** High temperatures strongly increase Hd, degrading takeoff performance.")
             st.latex(r"H_d = \frac{288.15}{0.0065} \left[ 1 - \left( \frac{\rho_\infty}{\rho_0} \right)^{\frac{1}{4.2559}} \right]")
             
         u_h9 = st.selectbox("Altitude Unit ", ["ft", "m"], key="u_h9")
@@ -637,16 +646,26 @@ with tab4:
             if st.form_submit_button("Calculate Hd"):
                 for i, row in df_hd.iterrows():
                     changed = get_changed_cols(row, st.session_state['hd_prev'].iloc[i]) if i < len(st.session_state['hd_prev']) else list(row.index)
-                    target = get_target(["Rho_inf (kg/m3)", f"Hd ({u_h9})"], changed, row)
-                    rho0 = row["Rho0 (kg/m3)"]
                     
-                    if target == f"Hd ({u_h9})" and not pd.isna(row["Rho_inf (kg/m3)"]):
-                        rho_inf = row["Rho_inf (kg/m3)"]
-                        hd_val = (288.15 / 0.0065) * (1 - (rho_inf / rho0)**(1/4.2559))
-                        df_hd.at[i, target] = convert_from_SI(hd_val, u_h9, "Distance")
-                    elif target == "Rho_inf (kg/m3)" and not pd.isna(row[f"Hd ({u_h9})"]):
-                        hd_val = convert_to_SI(row[f"Hd ({u_h9})"], u_h9, "Distance")
-                        df_hd.at[i, target] = rho0 * (1 - (0.0065 * hd_val) / 288.15)**4.2559
+                    z_col = f"Hd ({u_h9})"
+                    r_col = "Rho_inf (kg/m3)"
+                    
+                    source = next((v for v in [z_col, r_col] if v in changed and not pd.isna(row[v])), None)
+                    if not source: source = next((v for v in [z_col, r_col] if not pd.isna(row[v])), None)
+                    
+                    rho0 = row["Rho0 (kg/m3)"]
+                    if not pd.isna(rho0) and rho0 > 0:
+                        if source == z_col:
+                            hd_val = convert_to_SI(row[z_col], u_h9, "Distance")
+                            base = max(0.0, 1 - (0.0065 * hd_val) / 288.15)
+                            rho_inf = rho0 * (base)**4.2559
+                            df_hd.at[i, r_col] = rho_inf
+                        elif source == r_col:
+                            rho_inf = row[r_col]
+                            base = max(0.0, rho_inf / rho0)
+                            hd_val = (288.15 / 0.0065) * (1 - (base)**(1/4.2559))
+                            df_hd.at[i, z_col] = convert_from_SI(hd_val, u_h9, "Distance")
+                            
                 st.session_state['hd'] = df_hd
                 st.session_state['hd_prev'] = df_hd.copy()
                 st.rerun()
@@ -655,7 +674,7 @@ with tab4:
     st.header("2. Compressible Airspeeds (V, Ve, Vc)")
     
     with st.expander("ℹ️ True, Equivalent and Calibrated Airspeed Equations"):
-        st.markdown("**Use case:** Calculation of flight speeds from dynamic pressure (Pitot probe) accounting for compressibility.\n\n- **Assumptions:** Air considered as a compressible ideal gas. $P_0$ and $\rho_0$ are standard sea-level values.\n- **$V_c$ (Calibrated):** Speed displayed in the cockpit, calibrated for sea-level density and pressure.\n- **$V_e$ (Equivalent):** Equivalent airspeed (corrects compressibility error at high altitudes).\n- **$V$ (True):** True airspeed of the aircraft through the air mass.")
+        st.markdown("**Use case:** Calculation of flight speeds from dynamic pressure (Pitot probe) accounting for compressibility[span_4](start_span)[span_4](end_span)[span_5](start_span)[span_5](end_span)[span_6](start_span)[span_6](end_span).\n\n- **Assumptions:** Air considered as a compressible ideal gas. $P_0$ and $\rho_0$ are standard sea-level values[span_7](start_span)[span_7](end_span)[span_8](start_span)[span_8](end_span).\n- **$V_c$ (Calibrated):** Speed displayed in the cockpit, calibrated for sea-level density and pressure[span_9](start_span)[span_9](end_span).\n- **$V_e$ (Equivalent):** Equivalent airspeed (corrects compressibility error at high altitudes)[span_10](start_span)[span_10](end_span).\n- **$V$ (True):** True airspeed of the aircraft through the air mass[span_11](start_span)[span_11](end_span).")
         st.latex(r"V_c = \sqrt{\frac{2\gamma}{\gamma-1} \frac{P_0}{\rho_0} \left[ \left(1 + \frac{\Delta P}{P_0}\right)^{\frac{\gamma-1}{\gamma}} - 1 \right]}")
         st.latex(r"V_e = \sqrt{\frac{2\gamma}{\gamma-1} \frac{P_\infty}{\rho_0} \left[ \left(1 + \frac{\Delta P}{P_\infty}\right)^{\frac{\gamma-1}{\gamma}} - 1 \right]}")
         st.latex(r"V = \sqrt{\frac{2\gamma}{\gamma-1} \frac{P_\infty}{\rho_\infty} \left[ \left(1 + \frac{\Delta P}{P_\infty}\right)^{\frac{\gamma-1}{\gamma}} - 1 \right]}")
@@ -675,26 +694,28 @@ with tab4:
                 changed = get_changed_cols(row, st.session_state['spd_prev'].iloc[i]) if i < len(st.session_state['spd_prev']) else list(row.index)
                 
                 gamma, p0, rho0 = row["Gamma"], row["P0 (Pa)"], row["Rho0"]
+                if pd.isna(p0) or p0 <= 0 or pd.isna(rho0) or rho0 <= 0 or pd.isna(gamma) or gamma <= 1: continue
+                
                 p_inf = convert_to_SI(row[f"P_inf ({u_p10})"], u_p10, "Pressure")
                 rho_inf = row["Rho_inf"]
                 
-                target = get_target([f"Delta P ({u_p10})", f"Vc ({u_v10})", f"Ve ({u_v10})", f"True V ({u_v10})"], changed, row)
+                cols_spd = [f"Delta P ({u_p10})", f"Vc ({u_v10})", f"Ve ({u_v10})", f"True V ({u_v10})"]
+                source = next((v for v in cols_spd if v in changed and not pd.isna(row[v])), None)
+                if not source: source = next((v for v in cols_spd if not pd.isna(row[v])), None)
                 
                 dp = np.nan
-                # Inversion: Find Delta P from the imposed speed
-                if target == f"Vc ({u_v10})" and not pd.isna(row[f"Vc ({u_v10})"]):
+                if source == f"Vc ({u_v10})":
                     vc = convert_to_SI(row[f"Vc ({u_v10})"], u_v10, "Velocity")
                     dp = p0 * ((1 + ((gamma-1)/(2*gamma)) * (rho0/p0) * vc**2)**(gamma/(gamma-1)) - 1)
-                elif target == f"Ve ({u_v10})" and not pd.isna(row[f"Ve ({u_v10})"]) and not pd.isna(p_inf):
+                elif source == f"Ve ({u_v10})" and not pd.isna(p_inf):
                     ve = convert_to_SI(row[f"Ve ({u_v10})"], u_v10, "Velocity")
                     dp = p_inf * ((1 + ((gamma-1)/(2*gamma)) * (rho0/p_inf) * ve**2)**(gamma/(gamma-1)) - 1)
-                elif target == f"True V ({u_v10})" and not pd.isna(row[f"True V ({u_v10})"]) and not pd.isna(p_inf) and not pd.isna(rho_inf):
+                elif source == f"True V ({u_v10})" and not pd.isna(p_inf) and not pd.isna(rho_inf):
                     v = convert_to_SI(row[f"True V ({u_v10})"], u_v10, "Velocity")
                     dp = p_inf * ((1 + ((gamma-1)/(2*gamma)) * (rho_inf/p_inf) * v**2)**(gamma/(gamma-1)) - 1)
-                elif not pd.isna(row[f"Delta P ({u_p10})"]):
+                elif source == f"Delta P ({u_p10})":
                     dp = convert_to_SI(row[f"Delta P ({u_p10})"], u_p10, "Pressure")
 
-                # Direct calculation of all values from Delta P
                 if not pd.isna(dp):
                     df_spd.at[i, f"Delta P ({u_p10})"] = convert_from_SI(dp, u_p10, "Pressure")
                     df_spd.at[i, f"Vc ({u_v10})"] = convert_from_SI(np.sqrt((2*gamma/(gamma-1))*(p0/rho0) * ((1 + dp/p0)**((gamma-1)/gamma) - 1)), u_v10, "Velocity")
@@ -710,7 +731,7 @@ with tab4:
     st.header("3. Pitot Probe Temperature (Kinetic Heating)")
     
     with st.expander("ℹ️ Adiabatic Probe Heating (Tp)"):
-        st.markdown("**Use case:** Calculate ambient temperature reading error due to air stagnation in the probe.\n\n- **Assumptions:** Perfect adiabatic braking (recovery factor = 1).\n- **Limits:** For very low speeds (< 100 m/s), heating is negligible (< 5K).")
+        st.markdown("**Use case:** Calculate ambient temperature reading error due to air stagnation in the probe[span_12](start_span)[span_12](end_span).\n\n- **Assumptions:** Perfect adiabatic braking (recovery factor = 1)[span_13](start_span)[span_13](end_span).\n- **Limits:** For very low speeds (< 100 m/s), heating is negligible (< 5K)[span_14](start_span)[span_14](end_span).")
         st.latex(r"T_p = T_\infty + \frac{\gamma-1}{2\gamma R} V^2 \quad (\approx T_\infty + 0.0005 V^2 \text{ for air})")
         
     col_u11_v, col_u11_t = st.columns(2)
@@ -726,28 +747,50 @@ with tab4:
         if st.form_submit_button("Calculate Temperatures"):
             for i, row in df_tp.iterrows():
                 changed = get_changed_cols(row, st.session_state['temp_probe_prev'].iloc[i]) if i < len(st.session_state['temp_probe_prev']) else list(row.index)
-                target = get_target([f"V ({u_v11})", f"T_inf ({u_t11})", f"T_pitot ({u_t11})"], changed, row)
+                
+                t_inf_col = f"T_inf ({u_t11})"
+                t_p_col = f"T_pitot ({u_t11})"
+                v_col = f"V ({u_v11})"
+                cols_tp = [t_p_col, t_inf_col, v_col]
+                
+                source = next((v for v in cols_tp if v in changed and not pd.isna(row[v])), None)
+                if not source: source = next((v for v in cols_tp if not pd.isna(row[v])), None)
                 
                 gamma, r = row["Gamma"], row["r (J/kgK)"]
+                if pd.isna(gamma) or gamma <= 1 or pd.isna(r) or r <= 0: continue
                 
-                if target == f"T_pitot ({u_t11})" and not pd.isna(row[f"T_inf ({u_t11})"]) and not pd.isna(row[f"V ({u_v11})"]):
-                    t_inf = convert_to_SI(row[f"T_inf ({u_t11})"], u_t11, "Temperature")
-                    v = convert_to_SI(row[f"V ({u_v11})"], u_v11, "Velocity")
-                    t_p = t_inf + ((gamma-1)/(2*gamma*r)) * v**2
-                    df_tp.at[i, target] = convert_from_SI(t_p, u_t11, "Temperature")
-                    
-                elif target == f"T_inf ({u_t11})" and not pd.isna(row[f"T_pitot ({u_t11})"]) and not pd.isna(row[f"V ({u_v11})"]):
-                    t_p = convert_to_SI(row[f"T_pitot ({u_t11})"], u_t11, "Temperature")
-                    v = convert_to_SI(row[f"V ({u_v11})"], u_v11, "Velocity")
-                    t_inf = t_p - ((gamma-1)/(2*gamma*r)) * v**2
-                    df_tp.at[i, target] = convert_from_SI(t_inf, u_t11, "Temperature")
-                    
-                elif target == f"V ({u_v11})" and not pd.isna(row[f"T_pitot ({u_t11})"]) and not pd.isna(row[f"T_inf ({u_t11})"]):
-                    t_p = convert_to_SI(row[f"T_pitot ({u_t11})"], u_t11, "Temperature")
-                    t_inf = convert_to_SI(row[f"T_inf ({u_t11})"], u_t11, "Temperature")
+                if source == t_p_col and not pd.isna(row[t_inf_col]):
+                    t_p = convert_to_SI(row[t_p_col], u_t11, "Temperature")
+                    t_inf = convert_to_SI(row[t_inf_col], u_t11, "Temperature")
                     if t_p >= t_inf:
                         v = np.sqrt((t_p - t_inf) * (2*gamma*r) / (gamma-1))
-                        df_tp.at[i, target] = convert_from_SI(v, u_v11, "Velocity")
+                        df_tp.at[i, v_col] = convert_from_SI(v, u_v11, "Velocity")
+                elif source == t_p_col and not pd.isna(row[v_col]):
+                    t_p = convert_to_SI(row[t_p_col], u_t11, "Temperature")
+                    v = convert_to_SI(row[v_col], u_v11, "Velocity")
+                    t_inf = t_p - ((gamma-1)/(2*gamma*r)) * v**2
+                    df_tp.at[i, t_inf_col] = convert_from_SI(t_inf, u_t11, "Temperature")
+                elif source == t_inf_col and not pd.isna(row[v_col]):
+                    t_inf = convert_to_SI(row[t_inf_col], u_t11, "Temperature")
+                    v = convert_to_SI(row[v_col], u_v11, "Velocity")
+                    t_p = t_inf + ((gamma-1)/(2*gamma*r)) * v**2
+                    df_tp.at[i, t_p_col] = convert_from_SI(t_p, u_t11, "Temperature")
+                elif source == t_inf_col and not pd.isna(row[t_p_col]):
+                    t_inf = convert_to_SI(row[t_inf_col], u_t11, "Temperature")
+                    t_p = convert_to_SI(row[t_p_col], u_t11, "Temperature")
+                    if t_p >= t_inf:
+                        v = np.sqrt((t_p - t_inf) * (2*gamma*r) / (gamma-1))
+                        df_tp.at[i, v_col] = convert_from_SI(v, u_v11, "Velocity")
+                elif source == v_col and not pd.isna(row[t_inf_col]):
+                    v = convert_to_SI(row[v_col], u_v11, "Velocity")
+                    t_inf = convert_to_SI(row[t_inf_col], u_t11, "Temperature")
+                    t_p = t_inf + ((gamma-1)/(2*gamma*r)) * v**2
+                    df_tp.at[i, t_p_col] = convert_from_SI(t_p, u_t11, "Temperature")
+                elif source == v_col and not pd.isna(row[t_p_col]):
+                    v = convert_to_SI(row[v_col], u_v11, "Velocity")
+                    t_p = convert_to_SI(row[t_p_col], u_t11, "Temperature")
+                    t_inf = t_p - ((gamma-1)/(2*gamma*r)) * v**2
+                    df_tp.at[i, t_inf_col] = convert_from_SI(t_inf, u_t11, "Temperature")
                         
             st.session_state['temp_probe'] = df_tp
             st.session_state['temp_probe_prev'] = df_tp.copy()
@@ -757,7 +800,7 @@ with tab4:
     st.header("4. Calibration Chains and System Errors")
     
     with st.expander("ℹ️ Instrumental Error Cascades"):
-        st.markdown("**Use case:** Logical path from the instrument reading to the true physical value.\n\n- **ASIR (Airspeed Indicator Reading) -> Vt:** Instrument correction, static system error, compressibility, and density.\n- **AltR (Altimeter Reading) -> Hp:** Instrument correction and static source error.")
+        st.markdown("**Use case:** Logical path from the instrument reading to the true physical value[span_15](start_span)[span_15](end_span).\n\n- **ASIR (Airspeed Indicator Reading) -> Vt:** Instrument correction, static system error, compressibility, and density[span_16](start_span)[span_16](end_span).\n- **AltR (Altimeter Reading) -> Hp:** Instrument correction and static system pressure error[span_17](start_span)[span_17](end_span).")
         st.markdown(r"$V_t = V_e \times \sqrt{\frac{\rho_0}{\rho_\infty}}$")
     
     st.subheader("A. Altimeter Chain")
@@ -769,17 +812,29 @@ with tab4:
         df_cal_alt = st.data_editor(st.session_state['chain_alt'], num_rows="dynamic", use_container_width=True)
         if st.form_submit_button("Solve Altimeter Chain"):
             for i, row in df_cal_alt.iterrows():
-                altr, err_i, hpp, err_s, hp = row[cols_alt[0]], row[cols_alt[1]], row[cols_alt[2]], row[cols_alt[3]], row[cols_alt[4]]
-                # Forward Propagation
-                if not pd.isna(altr) and not pd.isna(err_i):
-                    hpp_calc = altr + err_i
-                    df_cal_alt.at[i, cols_alt[2]] = hpp_calc
-                    if not pd.isna(err_s): df_cal_alt.at[i, cols_alt[4]] = hpp_calc + err_s
-                # Backward Propagation
-                elif not pd.isna(hp) and not pd.isna(err_s):
-                    hpp_calc = hp - err_s
-                    df_cal_alt.at[i, cols_alt[2]] = hpp_calc
-                    if not pd.isna(err_i): df_cal_alt.at[i, cols_alt[0]] = hpp_calc - err_i
+                changed = get_changed_cols(row, st.session_state['chain_alt_prev'].iloc[i]) if i < len(st.session_state['chain_alt_prev']) else list(row.index)
+                
+                main_vars = [cols_alt[0], cols_alt[2], cols_alt[4]]
+                source = next((v for v in main_vars if v in changed and not pd.isna(row[v])), None)
+                if not source: source = next((v for v in main_vars if not pd.isna(row[v])), None)
+                
+                if source:
+                    vals = {v: row[v] for v in main_vars}
+                    e_i, e_s = row[cols_alt[1]], row[cols_alt[3]]
+                    
+                    if source == cols_alt[0]: # Forward from AltR
+                        if not pd.isna(e_i): vals[cols_alt[2]] = vals[cols_alt[0]] + e_i
+                        if not pd.isna(e_i) and not pd.isna(e_s): vals[cols_alt[4]] = vals[cols_alt[2]] + e_s
+                    elif source == cols_alt[2]: # Outward from Hp'
+                        if not pd.isna(e_i): vals[cols_alt[0]] = vals[cols_alt[2]] - e_i
+                        if not pd.isna(e_s): vals[cols_alt[4]] = vals[cols_alt[2]] + e_s
+                    elif source == cols_alt[4]: # Backward from Hp
+                        if not pd.isna(e_s): vals[cols_alt[2]] = vals[cols_alt[4]] - e_s
+                        if not pd.isna(e_s) and not pd.isna(e_i): vals[cols_alt[0]] = vals[cols_alt[2]] - e_i
+                        
+                    for v in main_vars:
+                        df_cal_alt.at[i, v] = vals[v]
+                        
             st.session_state['chain_alt'] = df_cal_alt
             st.session_state['chain_alt_prev'] = df_cal_alt.copy()
             st.rerun()
@@ -793,32 +848,41 @@ with tab4:
         df_cal_spd = st.data_editor(st.session_state['chain_spd'], num_rows="dynamic", use_container_width=True)
         if st.form_submit_button("Solve Airspeed Chain"):
             for i, row in df_cal_spd.iterrows():
-                asir, e_i, vi, e_p, vc, e_c, ve, ratio_rho, vt = row[cols_spd_chain[0]], row[cols_spd_chain[1]], row[cols_spd_chain[2]], row[cols_spd_chain[3]], row[cols_spd_chain[4]], row[cols_spd_chain[5]], row[cols_spd_chain[6]], row[cols_spd_chain[7]], row[cols_spd_chain[8]]
+                changed = get_changed_cols(row, st.session_state['chain_spd_prev'].iloc[i]) if i < len(st.session_state['chain_spd_prev']) else list(row.index)
                 
-                # Forward Propagation
-                if not pd.isna(asir) and not pd.isna(e_i):
-                    vi_c = asir + e_i
-                    df_cal_spd.at[i, cols_spd_chain[2]] = vi_c
-                    if not pd.isna(e_p):
-                        vc_c = vi_c + e_p
-                        df_cal_spd.at[i, cols_spd_chain[4]] = vc_c
-                        if not pd.isna(e_c):
-                            ve_c = vc_c + e_c
-                            df_cal_spd.at[i, cols_spd_chain[6]] = ve_c
-                            if not pd.isna(ratio_rho): df_cal_spd.at[i, cols_spd_chain[8]] = ve_c * np.sqrt(ratio_rho)
-                # Backward Propagation
-                elif not pd.isna(vt) and not pd.isna(ratio_rho) and ratio_rho > 0:
-                    ve_c = vt / np.sqrt(ratio_rho)
-                    df_cal_spd.at[i, cols_spd_chain[6]] = ve_c
-                    if not pd.isna(e_c):
-                        vc_c = ve_c - e_c
-                        df_cal_spd.at[i, cols_spd_chain[4]] = vc_c
-                        if not pd.isna(e_p):
-                            vi_c = vc_c - e_p
-                            df_cal_spd.at[i, cols_spd_chain[2]] = vi_c
-                            if not pd.isna(e_i): df_cal_spd.at[i, cols_spd_chain[0]] = vi_c - e_i
-                            
+                main_vars = [cols_spd_chain[0], cols_spd_chain[2], cols_spd_chain[4], cols_spd_chain[6], cols_spd_chain[8]]
+                source = next((v for v in main_vars if v in changed and not pd.isna(row[v])), None)
+                if not source: source = next((v for v in main_vars if not pd.isna(row[v])), None)
+                
+                if source:
+                    vals = {v: row[v] for v in main_vars}
+                    e_i, e_p, e_c, r_rho = row[cols_spd_chain[1]], row[cols_spd_chain[3]], row[cols_spd_chain[5]], row[cols_spd_chain[7]]
+                    
+                    # Backward propagation
+                    if source == main_vars[4]:
+                        if not pd.isna(r_rho) and r_rho > 0: vals[main_vars[3]] = vals[main_vars[4]] / np.sqrt(r_rho)
+                    if source in [main_vars[3], main_vars[4]]: 
+                        if not pd.isna(e_c) and not pd.isna(vals[main_vars[3]]): vals[main_vars[2]] = vals[main_vars[3]] - e_c
+                    if source in [main_vars[2], main_vars[3], main_vars[4]]: 
+                        if not pd.isna(e_p) and not pd.isna(vals[main_vars[2]]): vals[main_vars[1]] = vals[main_vars[2]] - e_p
+                    if source in [main_vars[1], main_vars[2], main_vars[3], main_vars[4]]: 
+                        if not pd.isna(e_i) and not pd.isna(vals[main_vars[1]]): vals[main_vars[0]] = vals[main_vars[1]] - e_i
+                        
+                    # Forward propagation
+                    if source == main_vars[0]: 
+                        if not pd.isna(e_i) and not pd.isna(vals[main_vars[0]]): vals[main_vars[1]] = vals[main_vars[0]] + e_i
+                    if source in [main_vars[0], main_vars[1]]: 
+                        if not pd.isna(e_p) and not pd.isna(vals[main_vars[1]]): vals[main_vars[2]] = vals[main_vars[1]] + e_p
+                    if source in [main_vars[0], main_vars[1], main_vars[2]]: 
+                        if not pd.isna(e_c) and not pd.isna(vals[main_vars[2]]): vals[main_vars[3]] = vals[main_vars[2]] + e_c
+                    if source in [main_vars[0], main_vars[1], main_vars[2], main_vars[3]]: 
+                        if not pd.isna(r_rho) and r_rho > 0 and not pd.isna(vals[main_vars[3]]): vals[main_vars[4]] = vals[main_vars[3]] * np.sqrt(r_rho)
+                        
+                    for v in main_vars:
+                        df_cal_spd.at[i, v] = vals[v]
+                        
             st.session_state['chain_spd'] = df_cal_spd
             st.session_state['chain_spd_prev'] = df_cal_spd.copy()
             st.rerun()
+
 
